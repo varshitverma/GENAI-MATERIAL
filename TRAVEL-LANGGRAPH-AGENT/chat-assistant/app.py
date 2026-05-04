@@ -42,24 +42,44 @@ DEFAULT_STATE = {
 # UTILITY FUNCTIONS
 # =========================================================
 
+from datetime import datetime
+from dateutil import parser
+
+def resolve_date(raw_date: str):
+    if not raw_date or raw_date == "unknown":
+        return "unknown"
+
+    try:
+        current_year = datetime.utcnow().year
+        dt = parser.parse(raw_date, fuzzy=True, default=datetime(current_year, 1, 1))
+        dt = dt.replace(year=current_year)
+        return dt.strftime("%Y-%m-%d")
+    except:
+        return "unknown"
+    
 async def parse_user_request(text: str):
     logger.info(f"🧠 Parsing user input: {text}")
 
     prompt = f"""
-    Extract travel details from the user's request. 
-    User Request: "{text}"
-    
-    Return ONLY a JSON object with:
-    - origin (string or "unknown")
-    - destination (string or "unknown")
-    - travel_date_formatted (YYYY-MM-DD ONLY if explicitly given)
-    - total_budget (number or null)
+Extract travel details from the user's request.
 
-    RULES:
-    - DO NOT assume today's date
-    - DO NOT convert "July 15th" unless year is present
-    - If unclear date → "unknown"
-    """
+User Request: "{text}"
+
+Return ONLY a JSON object with:
+
+- origin: string or "unknown"
+- destination: string or "unknown"
+- travel_date_raw: string exactly as user wrote (e.g. "oct 25th", "15 july", or "unknown")
+- total_budget: number or null
+
+STRICT RULES:
+- DO NOT infer or calculate dates
+- DO NOT convert dates to ISO format
+- DO NOT assume year, month, or day
+- DO NOT normalize or reformat anything related to date
+- If user does not explicitly provide full date → travel_date_raw must be "unknown"
+- Never hallucinate missing values
+"""
 
     try:
         response = await llm.ainvoke(prompt)
@@ -172,15 +192,16 @@ async def handle_message(message: cl.Message):
     new_details = await parse_user_request(user_input)
 
     if new_details:
-        # FIX: map both possible keys safely
-        if "travel_date_formatted" in new_details:
-            new_details["travel_date_formatted"] = new_details["travel_date_formatted"]
-
-        for key in ["origin", "destination", "travel_date_formatted"]:
-            val = new_details.get(key)
-            if val and val != "unknown":
+        for key in ["origin", "destination"]:
+            val = new_details.get(key, "unknown")
+            if val != "unknown":
                 current_data[key] = val
 
+        # 🔥 DATE FIX (THIS IS THE IMPORTANT PART)
+        raw_date = new_details.get("travel_date_raw", "unknown")
+        current_data["travel_date_formatted"] = resolve_date(raw_date)
+
+        # budget
         if new_details.get("total_budget"):
             current_data["total_budget"] = new_details["total_budget"]
 
